@@ -1,0 +1,6 @@
+name = "ndraawz-pages"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "ndraawz-storage"
+id = "5b9d61b694d54c65ac275846b1111f32"
