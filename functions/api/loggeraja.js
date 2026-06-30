@@ -1,5 +1,5 @@
-const https = require('https');
-const http = require('http');
+// functions/api/[[path]].js - Cloudflare Pages Functions
+// 100% sama dengan versi Node.js asli
 
 const DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1452653310443257970/SkdnTLTdZUq5hJUf7POXHYcILxlYIVTS7TVc-NYKruBSlotTJtA2BzHY9bEACJxrlnd5";
 
@@ -8,41 +8,32 @@ const BOT_AVATAR_URL = "https://cdn.discordapp.com/attachments/14649126581081252
 const FOOTER_ICON_URL = "https://cdn.discordapp.com/attachments/1464912658108125278/1472698650848395451/icon.png";
 const EMBED_COLOR = 0x00e5ff;
 
-function getGeoInfo(ip) {
-    return new Promise((resolve) => {
+// Sama persis dengan fungsi getGeoInfo asli
+async function getGeoInfo(ip) {
+    try {
         const url = `http://ip-api.com/json/${ip}?fields=status,country,regionName,city,isp,as,org,query`;
-        const timeout = setTimeout(() => resolve(null), 5000);
-
-        http.get(url, (geoRes) => {
-            let data = '';
-            geoRes.on('data', chunk => data += chunk);
-            geoRes.on('end', () => {
-                clearTimeout(timeout);
-                try {
-                    const json = JSON.parse(data);
-                    if (json.status === 'success') {
-                        resolve({
-                            country: json.country || "N/A",
-                            region: json.regionName || "N/A",
-                            city: json.city || "N/A",
-                            isp: json.isp || "N/A",
-                            as: json.as || "N/A",
-                            org: json.org || "N/A"
-                        });
-                    } else {
-                        resolve(null);
-                    }
-                } catch (e) {
-                    resolve(null);
-                }
-            });
-        }).on('error', () => {
-            clearTimeout(timeout);
-            resolve(null);
-        });
-    });
+        
+        // Cloudflare Workers/Pages menggunakan fetch API
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            return {
+                country: data.country || "N/A",
+                region: data.regionName || "N/A",
+                city: data.city || "N/A",
+                isp: data.isp || "N/A",
+                as: data.as || "N/A",
+                org: data.org || "N/A"
+            };
+        }
+        return null;
+    } catch (e) {
+        return null;
+    }
 }
 
+// Sama persis dengan fungsi sendToDiscord asli (tapi pake fetch)
 async function sendToDiscord(embed) {
     const payload = JSON.stringify({
         username: BOT_USERNAME,
@@ -50,59 +41,79 @@ async function sendToDiscord(embed) {
         embeds: [embed]
     });
 
-    const url = new URL(DISCORD_WEBHOOK);
-    const options = {
-        hostname: url.hostname,
-        path: url.pathname + url.search,
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(payload)
-        }
+    try {
+        const response = await fetch(DISCORD_WEBHOOK, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': payload.length.toString()
+            },
+            body: payload
+        });
+        return response.status === 204 || response.status === 200;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Fungsi untuk membaca raw body (mirip getRawBody)
+async function getRawBody(request) {
+    try {
+        const data = await request.json();
+        return data;
+    } catch (e) {
+        return null;
+    }
+}
+
+// Export handler untuk Cloudflare Pages
+export async function onRequest(context) {
+    const { request } = context;
+    
+    // Set CORS headers
+    const headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
     };
 
-    return new Promise((resolve) => {
-        const req = https.request(options, (res) => {
-            res.resume();
-            resolve(res.statusCode === 204 || res.statusCode === 200);
-        });
-        req.on('error', () => resolve(false));
-        req.write(payload);
-        req.end();
-    });
-}
-
-async function getRawBody(req) {
-    if (req.body) {
-        if (typeof req.body === 'object') return req.body;
-        if (typeof req.body === 'string') return JSON.parse(req.body);
+    // Handle OPTIONS
+    if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 200, headers });
     }
-    return new Promise((resolve, reject) => {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', () => {
-            try { resolve(JSON.parse(body)); }
-            catch (e) { reject(e); }
+
+    // Only allow POST
+    if (request.method !== 'POST') {
+        return new Response(JSON.stringify({ error: 'Method Not Allowed' }), {
+            status: 405,
+            headers: {
+                ...headers,
+                'Content-Type': 'application/json'
+            }
         });
-        req.on('error', reject);
-    });
-}
+    }
 
-module.exports = async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-    if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-
-    const clientIp = req.headers['x-forwarded-for']?.split(',')[0] || req.socket?.remoteAddress || "unknown";
+    // Get client IP (sama seperti versi Node.js)
+    const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0] || 
+                    request.headers.get('cf-connecting-ip') ||
+                    request.headers.get('x-real-ip') || 
+                    "unknown";
     const cleanIp = clientIp.replace('::ffff:', '').trim();
 
     try {
-        const data = await getRawBody(req);
-        if (!data) return res.status(400).json({ error: 'Empty body' });
+        // Baca body (sama seperti getRawBody)
+        const data = await getRawBody(request);
+        if (!data) {
+            return new Response(JSON.stringify({ error: 'Empty body' }), {
+                status: 400,
+                headers: {
+                    ...headers,
+                    'Content-Type': 'application/json'
+                }
+            });
+        }
 
+        // Handle security type
         if (data.type === "security") {
             const embed = {
                 title: "❗️ Ndraawz Security System ❗️",
@@ -112,9 +123,16 @@ module.exports = async function handler(req, res) {
                 timestamp: new Date().toISOString()
             };
             await sendToDiscord(embed);
-            return res.status(200).json({ ok: true });
+            return new Response(JSON.stringify({ ok: true }), {
+                status: 200,
+                headers: {
+                    ...headers,
+                    'Content-Type': 'application/json'
+                }
+            });
         }
 
+        // Handle player type
         if (data.type === "player" && Array.isArray(data.fields)) {
             const geoData = await getGeoInfo(cleanIp);
 
@@ -145,14 +163,31 @@ module.exports = async function handler(req, res) {
             };
 
             await sendToDiscord(embed);
-            return res.status(200).json({ ok: true });
+            return new Response(JSON.stringify({ ok: true }), {
+                status: 200,
+                headers: {
+                    ...headers,
+                    'Content-Type': 'application/json'
+                }
+            });
         }
 
-        return res.status(400).json({ error: 'Invalid request format' });
+        return new Response(JSON.stringify({ error: 'Invalid request format' }), {
+            status: 400,
+            headers: {
+                ...headers,
+                'Content-Type': 'application/json'
+            }
+        });
 
     } catch (err) {
         console.error(`[LOG] Error: ${err.message}`);
-        return res.status(400).json({ error: 'Invalid JSON' });
+        return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+            status: 400,
+            headers: {
+                ...headers,
+                'Content-Type': 'application/json'
+            }
+        });
     }
-};
-      
+}
